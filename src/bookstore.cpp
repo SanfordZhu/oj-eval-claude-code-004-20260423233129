@@ -292,18 +292,27 @@ bool BookStore::updateAccount(const Account& account) {
 
     if (!found) return false;
 
+    accountIndex.clear();
     accountsStream.close();
     std::ofstream out(accountsFile, std::ios::trunc | std::ios::binary);
+    std::streamoff offset = 0;
     for (const auto& l : lines) {
         out << l;
+        std::string::size_type lineLen = l.size();
+        // Find the userid in this line for index
+        size_t firstBar = l.find('|');
+        if (firstBar != std::string::npos) {
+            int uidSize = std::stoi(l.substr(0, firstBar));
+            size_t pos = firstBar + 1;
+            std::string uid = l.substr(pos, uidSize);
+            accountIndex[uid] = {offset, (int)lineLen};
+        }
+        offset += lineLen;
     }
     out.flush();
     out.close();
 
     accountsStream.open(accountsFile, std::ios::in | std::ios::out | std::ios::binary | std::ios::app);
-
-    // Rebuild index
-    rebuildAccountIndex();
 
     return accountsStream.is_open();
 }
@@ -337,20 +346,27 @@ bool BookStore::deleteAccount(const std::string& userid) {
 
     if (!found) return false;
 
-    accountIndex.erase(userid);
-
+    accountIndex.clear();
     accountsStream.close();
     std::ofstream out(accountsFile, std::ios::trunc | std::ios::binary);
+    std::streamoff offset = 0;
     for (const auto& l : lines) {
         out << l;
+        std::string::size_type lineLen = l.size();
+        // Find the userid in this line for index
+        size_t firstBar = l.find('|');
+        if (firstBar != std::string::npos) {
+            int uidSize = std::stoi(l.substr(0, firstBar));
+            size_t pos = firstBar + 1;
+            std::string uid = l.substr(pos, uidSize);
+            accountIndex[uid] = {offset, (int)lineLen};
+        }
+        offset += lineLen;
     }
     out.flush();
     out.close();
 
     accountsStream.open(accountsFile, std::ios::in | std::ios::out | std::ios::binary | std::ios::app);
-
-    // Rebuild index
-    rebuildAccountIndex();
 
     return accountsStream.is_open();
 }
@@ -498,18 +514,27 @@ bool BookStore::updateBook(const Book& book) {
 
     if (!found) return false;
 
+    bookIndex.clear();
     booksStream.close();
     std::ofstream out(booksFile, std::ios::trunc | std::ios::binary);
+    std::streamoff offset = 0;
     for (const auto& l : lines) {
         out << l;
+        std::string::size_type lineLen = l.size();
+        // Find the isbn in this line for index
+        size_t firstBar = l.find('|');
+        if (firstBar != std::string::npos) {
+            int isbnSize = std::stoi(l.substr(0, firstBar));
+            size_t pos = firstBar + 1;
+            std::string isbn = l.substr(pos, isbnSize);
+            bookIndex[isbn] = {offset, (int)lineLen};
+        }
+        offset += lineLen;
     }
     out.flush();
     out.close();
 
     booksStream.open(booksFile, std::ios::in | std::ios::out | std::ios::binary | std::ios::app);
-
-    // Rebuild index
-    rebuildBookIndex();
 
     return booksStream.is_open();
 }
@@ -1103,6 +1128,11 @@ bool BookStore::handleShow(const std::vector<std::string>& args) {
         std::string type = arg.substr(1, eqPos - 1);
         std::string value = arg.substr(eqPos + 1);
 
+        // Strip surrounding quotes if present
+        if (!value.empty() && value.front() == '"' && value.back() == '"') {
+            value = value.substr(1, value.size() - 2);
+        }
+
         if (value.empty()) return false;
 
         if (type == "ISBN") {
@@ -1212,6 +1242,11 @@ bool BookStore::handleModify(const std::vector<std::string>& args) {
     for (const auto& arg : args) {
         std::string type, value;
         if (!parseModifyArg(arg, type, value)) return false;
+
+        // Strip surrounding quotes if present
+        if (!value.empty() && value.front() == '"' && value.back() == '"') {
+            value = value.substr(1, value.size() - 2);
+        }
 
         // Check for duplicate types
         for (const auto& t : typesFound) {
@@ -1460,20 +1495,27 @@ bool BookStore::deleteBook(const std::string& isbn) {
 
     if (!found) return false;
 
-    bookIndex.erase(isbn);
-
+    bookIndex.clear();
     booksStream.close();
     std::ofstream out(booksFile, std::ios::trunc | std::ios::binary);
+    std::streamoff offset = 0;
     for (const auto& l : lines) {
         out << l;
+        std::string::size_type lineLen = l.size();
+        // Find the isbn in this line for index
+        size_t firstBar = l.find('|');
+        if (firstBar != std::string::npos) {
+            int isbnSize = std::stoi(l.substr(0, firstBar));
+            size_t pos = firstBar + 1;
+            std::string ib = l.substr(pos, isbnSize);
+            bookIndex[ib] = {offset, (int)lineLen};
+        }
+        offset += lineLen;
     }
     out.flush();
     out.close();
 
     booksStream.open(booksFile, std::ios::in | std::ios::out | std::ios::binary | std::ios::app);
-
-    // Rebuild index
-    rebuildBookIndex();
 
     return booksStream.is_open();
 }
