@@ -372,9 +372,9 @@ bool BookStore::deleteAccount(const std::string& userid) {
 }
 
 bool BookStore::isUserLoggedIn(const std::string& userid) {
-    std::stack<Account> temp = loginStack;
+    std::stack<LoginFrame> temp = loginStack;
     while (!temp.empty()) {
-        if (temp.top().userid == userid) {
+        if (temp.top().account.userid == userid) {
             return true;
         }
         temp.pop();
@@ -725,14 +725,14 @@ Account BookStore::getCurrentAccount() const {
     if (loginStack.empty()) {
         return Account();
     }
-    return loginStack.top();
+    return loginStack.top().account;
 }
 
 int BookStore::getCurrentPrivilege() const {
     if (loginStack.empty()) {
         return 0;
     }
-    return loginStack.top().privilege;
+    return loginStack.top().account.privilege;
 }
 
 bool BookStore::isValidUserId(const std::string& s) const {
@@ -1009,7 +1009,11 @@ bool BookStore::handleSu(const std::vector<std::string>& args) {
         if (acc.password != password) return false;
     }
 
-    loginStack.push(acc);
+    // When pushing a new login frame, selected ISBN starts empty (as per example)
+    LoginFrame frame;
+    frame.account = acc;
+    frame.selectedISBN = "";
+    loginStack.push(frame);
     return true;
 }
 
@@ -1215,7 +1219,9 @@ bool BookStore::handleSelect(const std::vector<std::string>& args) {
     std::string isbn = args[0];
     if (!isValidISBN(isbn)) return false;
 
-    selectedISBN = isbn;
+    if (loginStack.empty()) return false;
+
+    loginStack.top().selectedISBN = isbn;
 
     if (!bookExists(isbn)) {
         Book newBook(isbn);
@@ -1229,6 +1235,9 @@ bool BookStore::handleModify(const std::vector<std::string>& args) {
     // modify (-ISBN=[ISBN] | -name="[BookName]" | -author="[Author]" | -keyword="[Keyword]" | -price=[Price])+ - privilege >= 3
     if (!checkPrivilege(3)) return false;
     if (args.empty()) return false;
+    if (loginStack.empty()) return false;
+
+    std::string selectedISBN = loginStack.top().selectedISBN;
     if (selectedISBN.empty()) return false;
 
     // Check that no book is currently selected or selected book doesn't exist
@@ -1322,6 +1331,9 @@ bool BookStore::handleImport(const std::vector<std::string>& args) {
     // import [Quantity] [TotalCost] - privilege >= 3
     if (!checkPrivilege(3)) return false;
     if (args.size() != 2) return false;
+    if (loginStack.empty()) return false;
+
+    std::string selectedISBN = loginStack.top().selectedISBN;
     if (selectedISBN.empty()) return false;
 
     std::string qtyStr = args[0];
@@ -1458,7 +1470,6 @@ bool BookStore::handleQuit() {
     while (!loginStack.empty()) {
         loginStack.pop();
     }
-    selectedISBN.clear();
     closeFiles();
     return false;  // exit program
 }

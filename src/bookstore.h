@@ -61,6 +61,11 @@ struct BookEntry {
     int lineLength;
 };
 
+struct LoginFrame {
+    Account account;
+    std::string selectedISBN;
+};
+
 class BookStore {
 private:
     std::string dataDir;
@@ -69,8 +74,7 @@ private:
     std::string transactionsFile;
     std::string counterFile;
 
-    std::stack<Account> loginStack;
-    std::string selectedISBN;
+    std::stack<LoginFrame> loginStack;
 
     int nextTransactionId;
 
