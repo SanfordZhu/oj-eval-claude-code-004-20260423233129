@@ -1,0 +1,12 @@
+CMakeFiles/
+CMakeCache.txt
+*.o
+*.obj
+code
+code.dir/
+install/
+*.log
+*.dat
+*.db
+data/
+*.tmp
