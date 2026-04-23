@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 #include <stack>
-#include <map>
+#include <unordered_map>
 #include <fstream>
 #include <mutex>
 
@@ -48,7 +48,17 @@ struct Transaction {
 
     Transaction() : id(0), quantity(0), amount(0), timestamp(0) {}
     Transaction(int i, const std::string& uname, const std::string& op, const std::string& ib, int q, double a)
-        : id(i), username(uname), operation(op), isbn(ib), quantity(q), amount(a) {}
+        : id(i), username(uname), operation(op), isbn(ib), quantity(q), amount(a), timestamp(0) {}
+};
+
+struct AccountEntry {
+    std::streamoff offset;
+    int lineLength;
+};
+
+struct BookEntry {
+    std::streamoff offset;
+    int lineLength;
 };
 
 class BookStore {
@@ -71,6 +81,14 @@ private:
     std::fstream transactionsStream;
 
     std::mutex fileMutex;
+
+    // In-memory index (positions only, not full data)
+    std::unordered_map<std::string, AccountEntry> accountIndex;
+    std::unordered_map<std::string, BookEntry> bookIndex;
+
+    // Rebuild index from file
+    void rebuildAccountIndex();
+    void rebuildBookIndex();
 
 public:
     BookStore(const std::string& dir = "./data");

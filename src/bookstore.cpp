@@ -4,6 +4,7 @@
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <sys/stat.h>
 
@@ -37,6 +38,10 @@ bool BookStore::init() {
             return false;
         }
     }
+
+    // Rebuild indexes
+    rebuildAccountIndex();
+    rebuildBookIndex();
 
     nextTransactionId = readNextTransactionId();
     initialized = true;
@@ -112,59 +117,109 @@ void BookStore::writeNextTransactionId(int id) {
     nextTransactionId = id;
 }
 
-// Account operations
-bool BookStore::findAccount(const std::string& userid, Account& out) {
+void BookStore::rebuildAccountIndex() {
     std::lock_guard<std::mutex> lock(fileMutex);
+    accountIndex.clear();
     accountsStream.clear();
     accountsStream.seekg(0);
 
     std::string line;
     while (std::getline(accountsStream, line)) {
         if (line.empty()) continue;
-        std::istringstream iss(line);
-        int uidSize, pwdSize, unameSize, priv;
-        if (!(iss >> uidSize)) continue;
 
-        char delim;
-        iss >> delim;
-        if (delim != '|') continue;
+        std::streamoff offset = accountsStream.tellg();
+        offset -= (line.size() + 1); // subtract line length + newline
 
-        std::string uid;
-        uid.resize(uidSize);
-        iss.read(&uid[0], uidSize);
-        iss >> delim;
-        if (delim != '|') continue;
+        size_t firstBar = line.find('|');
+        if (firstBar == std::string::npos) continue;
 
-        iss >> pwdSize >> delim;
-        std::string pwd;
-        pwd.resize(pwdSize);
-        iss.read(&pwd[0], pwdSize);
-        iss >> delim;
-        if (delim != '|') continue;
+        int uidSize = std::stoi(line.substr(0, firstBar));
+        size_t pos = firstBar + 1;
+        std::string uid = line.substr(pos, uidSize);
 
-        iss >> unameSize >> delim;
-        std::string uname;
-        uname.resize(unameSize);
-        iss.read(&uname[0], unameSize);
-        iss >> delim;
-        if (delim != '|') continue;
-
-        iss >> priv;
-
-        if (uid == userid) {
-            out.userid = uid;
-            out.password = pwd;
-            out.username = uname;
-            out.privilege = priv;
-            return true;
-        }
+        accountIndex[uid] = {offset, (int)line.size() + 1}; // include newline
     }
-    return false;
+}
+
+void BookStore::rebuildBookIndex() {
+    std::lock_guard<std::mutex> lock(fileMutex);
+    bookIndex.clear();
+    booksStream.clear();
+    booksStream.seekg(0);
+
+    std::string line;
+    while (std::getline(booksStream, line)) {
+        if (line.empty()) continue;
+
+        std::streamoff offset = booksStream.tellg();
+        offset -= (line.size() + 1); // subtract line length + newline
+
+        size_t firstBar = line.find('|');
+        if (firstBar == std::string::npos) continue;
+
+        int isbnSize = std::stoi(line.substr(0, firstBar));
+        size_t pos = firstBar + 1;
+        std::string isbn = line.substr(pos, isbnSize);
+
+        bookIndex[isbn] = {offset, (int)line.size() + 1}; // include newline
+    }
+}
+
+// Account operations
+bool BookStore::findAccount(const std::string& userid, Account& out) {
+    std::lock_guard<std::mutex> lock(fileMutex);
+
+    auto it = accountIndex.find(userid);
+    if (it == accountIndex.end()) {
+        return false;
+    }
+
+    accountsStream.clear();
+    accountsStream.seekg(it->second.offset);
+
+    std::string line;
+    std::getline(accountsStream, line);
+    if (line.empty()) return false;
+
+    std::istringstream iss(line);
+    int uidSize, pwdSize, unameSize, priv;
+    if (!(iss >> uidSize)) return false;
+
+    char delim;
+    iss >> delim;
+    if (delim != '|') return false;
+
+    std::string uid;
+    uid.resize(uidSize);
+    iss.read(&uid[0], uidSize);
+    iss >> delim;
+    if (delim != '|') return false;
+
+    iss >> pwdSize >> delim;
+    std::string pwd;
+    pwd.resize(pwdSize);
+    iss.read(&pwd[0], pwdSize);
+    iss >> delim;
+    if (delim != '|') return false;
+
+    iss >> unameSize >> delim;
+    std::string uname;
+    uname.resize(unameSize);
+    iss.read(&uname[0], unameSize);
+    iss >> delim;
+    if (delim != '|') return false;
+
+    iss >> priv;
+
+    out.userid = uid;
+    out.password = pwd;
+    out.username = uname;
+    out.privilege = priv;
+    return true;
 }
 
 bool BookStore::accountExists(const std::string& userid) {
-    Account acc;
-    return findAccount(userid, acc);
+    return accountIndex.count(userid) > 0;
 }
 
 bool BookStore::addAccount(const Account& account) {
@@ -175,6 +230,7 @@ bool BookStore::addAccount(const Account& account) {
 
     accountsStream.clear();
     accountsStream.seekp(0, std::ios::end);
+    std::streamoff offset = accountsStream.tellp();
 
     // Format: uidSize|uid|pwdSize|pwd|unameSize|uname|priv\n
     accountsStream << account.userid.size() << "|"
@@ -185,11 +241,19 @@ bool BookStore::addAccount(const Account& account) {
                   << account.username << "|"
                   << account.privilege << "\n";
 
-    return accountsStream.good();
+    if (accountsStream.good()) {
+        std::streamoff endOffset = accountsStream.tellp();
+        int lineLen = (int)(endOffset - offset);
+        accountIndex[account.userid] = {offset, lineLen};
+        return true;
+    }
+    return false;
 }
 
 bool BookStore::updateAccount(const Account& account) {
     std::lock_guard<std::mutex> lock(fileMutex);
+    if (!accountIndex.count(account.userid)) return false;
+
     std::vector<std::string> lines;
     accountsStream.clear();
     accountsStream.seekg(0);
@@ -237,11 +301,17 @@ bool BookStore::updateAccount(const Account& account) {
     out.close();
 
     accountsStream.open(accountsFile, std::ios::in | std::ios::out | std::ios::binary | std::ios::app);
+
+    // Rebuild index
+    rebuildAccountIndex();
+
     return accountsStream.is_open();
 }
 
 bool BookStore::deleteAccount(const std::string& userid) {
     std::lock_guard<std::mutex> lock(fileMutex);
+    if (!accountIndex.count(userid)) return false;
+
     std::vector<std::string> lines;
     accountsStream.clear();
     accountsStream.seekg(0);
@@ -267,6 +337,8 @@ bool BookStore::deleteAccount(const std::string& userid) {
 
     if (!found) return false;
 
+    accountIndex.erase(userid);
+
     accountsStream.close();
     std::ofstream out(accountsFile, std::ios::trunc | std::ios::binary);
     for (const auto& l : lines) {
@@ -276,6 +348,10 @@ bool BookStore::deleteAccount(const std::string& userid) {
     out.close();
 
     accountsStream.open(accountsFile, std::ios::in | std::ios::out | std::ios::binary | std::ios::app);
+
+    // Rebuild index
+    rebuildAccountIndex();
+
     return accountsStream.is_open();
 }
 
@@ -293,67 +369,59 @@ bool BookStore::isUserLoggedIn(const std::string& userid) {
 // Book operations
 bool BookStore::findBook(const std::string& isbn, Book& out) {
     std::lock_guard<std::mutex> lock(fileMutex);
+
+    auto it = bookIndex.find(isbn);
+    if (it == bookIndex.end()) {
+        return false;
+    }
+
     booksStream.clear();
-    booksStream.seekg(0);
+    booksStream.seekg(it->second.offset);
 
     std::string line;
-    while (std::getline(booksStream, line)) {
-        if (line.empty()) continue;
-        std::istringstream iss(line);
-        int isbnSize, nameSize, authorSize, keywordSize;
-        double price;
-        int stock;
+    std::getline(booksStream, line);
+    if (line.empty()) return false;
 
-        char delim;
-        if (!(iss >> isbnSize)) continue;
-        iss >> delim;
-        if (delim != '|') continue;
+    std::istringstream iss(line);
+    Book book;
+    int isbnSize, nameSize, authorSize, keywordSize;
+    char delim;
 
-        std::string ib;
-        ib.resize(isbnSize);
-        iss.read(&ib[0], isbnSize);
-        iss >> delim;
-        if (delim != '|') continue;
+    if (!(iss >> isbnSize)) return false;
+    iss >> delim;
+    if (delim != '|') return false;
 
-        if (ib != isbn) continue;
+    book.isbn.resize(isbnSize);
+    iss.read(&book.isbn[0], isbnSize);
+    iss >> delim;
+    if (delim != '|') return false;
 
-        iss >> nameSize >> delim;
-        std::string nm;
-        nm.resize(nameSize);
-        iss.read(&nm[0], nameSize);
-        iss >> delim;
-        if (delim != '|') continue;
+    iss >> nameSize >> delim;
+    book.name.resize(nameSize);
+    iss.read(&book.name[0], nameSize);
+    iss >> delim;
+    if (delim != '|') return false;
 
-        iss >> authorSize >> delim;
-        std::string au;
-        au.resize(authorSize);
-        iss.read(&au[0], authorSize);
-        iss >> delim;
-        if (delim != '|') continue;
+    iss >> authorSize >> delim;
+    book.author.resize(authorSize);
+    iss.read(&book.author[0], authorSize);
+    iss >> delim;
+    if (delim != '|') return false;
 
-        iss >> keywordSize >> delim;
-        std::string kw;
-        kw.resize(keywordSize);
-        iss.read(&kw[0], keywordSize);
-        iss >> delim;
-        if (delim != '|') continue;
+    iss >> keywordSize >> delim;
+    book.keyword.resize(keywordSize);
+    iss.read(&book.keyword[0], keywordSize);
+    iss >> delim;
+    if (delim != '|') return false;
 
-        iss >> price >> delim >> stock;
+    iss >> book.price >> delim >> book.stock;
 
-        out.isbn = ib;
-        out.name = nm;
-        out.author = au;
-        out.keyword = kw;
-        out.price = price;
-        out.stock = stock;
-        return true;
-    }
-    return false;
+    out = book;
+    return true;
 }
 
 bool BookStore::bookExists(const std::string& isbn) {
-    Book b;
-    return findBook(isbn, b);
+    return bookIndex.count(isbn) > 0;
 }
 
 bool BookStore::addBook(const Book& book) {
@@ -364,6 +432,7 @@ bool BookStore::addBook(const Book& book) {
 
     booksStream.clear();
     booksStream.seekp(0, std::ios::end);
+    std::streamoff offset = booksStream.tellp();
 
     booksStream << book.isbn.size() << "|"
                 << book.isbn << "|"
@@ -376,11 +445,19 @@ bool BookStore::addBook(const Book& book) {
                 << std::fixed << std::setprecision(2) << book.price << "|"
                 << book.stock << "\n";
 
-    return booksStream.good();
+    if (booksStream.good()) {
+        std::streamoff endOffset = booksStream.tellp();
+        int lineLen = (int)(endOffset - offset);
+        bookIndex[book.isbn] = {offset, lineLen};
+        return true;
+    }
+    return false;
 }
 
 bool BookStore::updateBook(const Book& book) {
     std::lock_guard<std::mutex> lock(fileMutex);
+    if (!bookIndex.count(book.isbn)) return false;
+
     std::vector<std::string> lines;
     booksStream.clear();
     booksStream.seekg(0);
@@ -430,7 +507,20 @@ bool BookStore::updateBook(const Book& book) {
     out.close();
 
     booksStream.open(booksFile, std::ios::in | std::ios::out | std::ios::binary | std::ios::app);
+
+    // Rebuild index
+    rebuildBookIndex();
+
     return booksStream.is_open();
+}
+
+std::vector<Book> BookStore::searchBooksByISBN(const std::string& isbn) {
+    std::vector<Book> result;
+    Book book;
+    if (findBook(isbn, book)) {
+        result.push_back(book);
+    }
+    return result;
 }
 
 std::vector<Book> BookStore::getAllBooks() {
@@ -478,15 +568,6 @@ std::vector<Book> BookStore::getAllBooks() {
         result.push_back(book);
     }
 
-    return result;
-}
-
-std::vector<Book> BookStore::searchBooksByISBN(const std::string& isbn) {
-    std::vector<Book> result;
-    Book book;
-    if (findBook(isbn, book)) {
-        result.push_back(book);
-    }
     return result;
 }
 
@@ -1349,6 +1430,8 @@ bool BookStore::handleQuit() {
 
 bool BookStore::deleteBook(const std::string& isbn) {
     std::lock_guard<std::mutex> lock(fileMutex);
+    if (!bookIndex.count(isbn)) return false;
+
     std::vector<std::string> lines;
     booksStream.clear();
     booksStream.seekg(0);
@@ -1377,6 +1460,8 @@ bool BookStore::deleteBook(const std::string& isbn) {
 
     if (!found) return false;
 
+    bookIndex.erase(isbn);
+
     booksStream.close();
     std::ofstream out(booksFile, std::ios::trunc | std::ios::binary);
     for (const auto& l : lines) {
@@ -1386,5 +1471,9 @@ bool BookStore::deleteBook(const std::string& isbn) {
     out.close();
 
     booksStream.open(booksFile, std::ios::in | std::ios::out | std::ios::binary | std::ios::app);
+
+    // Rebuild index
+    rebuildBookIndex();
+
     return booksStream.is_open();
 }
